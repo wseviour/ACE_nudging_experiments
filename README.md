@@ -19,6 +19,7 @@ ACE_nudging_experiments/
 │   ├── inference_template_prescribed.yaml
 │   └── inference_template_free.yaml
 └── analysis/                          # Python analysis and visualization scripts
+    ├── plot_level0_snapsi_nudged_vs_control.py # Compares Nudged vs Control vs ERA5 vs Climatology
     ├── plot_level0_case2_comparison.py# Compares level 0 winds with ERA5 and climatology
     ├── plot_spread_comparison.py      # Plots ensemble spread across multiple experiments
     ├── plot_zonal_mean.py             # Plots zonal mean eastward wind at 60°N across levels

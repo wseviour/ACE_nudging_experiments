@@ -51,13 +51,13 @@ N_FORWARD_STEPS = 100               # Number of 6-hour forecast steps (100 steps
 #   - "prescribed": Uppermost level completely overwritten with target state (tau = 0)
 #   - "control": SNAPSI 'control-full' experiment (relaxation towards 40-year daily climatology)
 #   - "free": No nudging applied (unconstrained free forecast)
-NUDGING_TYPE: Literal["blended", "prescribed", "free", "control"] = "blended"
+NUDGING_TYPE: Literal["blended", "prescribed", "free", "control"] = "control"
 
 # Choose nudging target state:
 #   - "reanalysis": Observed ERA5 for the forecast year (SNAPSI 'nudged-full')
 #   - "climatology": 40-year daily climatological state from ERA5 (SNAPSI 'control-full')
 # Note: Selecting NUDGING_TYPE = "control" automatically sets NUDGING_TARGET = "climatology".
-NUDGING_TARGET: Literal["reanalysis", "climatology"] = "reanalysis"
+NUDGING_TARGET: Literal["reanalysis", "climatology"] = "climatology"
 
 # 3. Blended Nudging Timescale or Weights (used when NUDGING_TYPE is "blended" or "control")
 # Option A: Set the relaxation timescale (tau) in hours or days
@@ -75,6 +75,10 @@ EXPERIMENT_NAME = None
 
 # Gaussian noise standard deviation added to temperature fields for perturbed members 1..N-1:
 TEMP_STD_DEV = 0.1                  # in Kelvin (0.1 K is standard; Member 0 is unperturbed)
+RANDOM_SEED = 42                    # Random seed for reproducible perturbations
+
+# Optional: reuse exact initial conditions from another experiment for matched paired comparisons:
+EXISTING_IC_DIR: pathlib.Path | None = pathlib.Path("/home/links/ws359/ACE/ACE_output/exp_20181213_ens10_blended_tau24h/initial_conditions")
 
 # 5. Paths and Environment
 OUTPUT_ROOT = pathlib.Path("/home/links/ws359/ACE/ACE_output")
@@ -213,6 +217,8 @@ def create_perturbed_ics(
     era5_data_dir: pathlib.Path,
     temp_std_dev: float,
     output_ic_dir: pathlib.Path,
+    existing_ic_dir: pathlib.Path | None = None,
+    seed: int | None = None,
 ) -> list[pathlib.Path]:
     """
     Creates an ensemble of initial conditions, perturbing temperature fields with Gaussian noise.
@@ -220,6 +226,26 @@ def create_perturbed_ics(
     Returns list of paths to the chunked NetCDF files.
     """
     output_ic_dir.mkdir(parents=True, exist_ok=True)
+
+    if existing_ic_dir is not None:
+        existing_ic_dir = pathlib.Path(existing_ic_dir)
+        existing_chunks = sorted(list(existing_ic_dir.glob("ic_chunk_*.nc")))
+        expected_chunks = int(np.ceil(n_members / batch_size))
+        if len(existing_chunks) == expected_chunks:
+            import shutil
+            chunk_paths = []
+            for src in existing_chunks:
+                dst = output_ic_dir / src.name
+                if not dst.exists() or dst.stat().st_size != src.stat().st_size:
+                    shutil.copy2(src, dst)
+                chunk_paths.append(dst)
+            logging.info("Reusing %d existing matched IC chunks from %s", len(chunk_paths), existing_ic_dir)
+            return chunk_paths
+        else:
+            logging.warning("Existing IC dir %s has %d chunks, expected %d. Generating new ICs...", existing_ic_dir, len(existing_chunks), expected_chunks)
+
+    if seed is not None:
+        np.random.seed(seed)
 
     # Determine year from start_time string
     dt = np.datetime64(start_time)
@@ -381,6 +407,8 @@ def main() -> None:
     reanalysis_weight = REANALYSIS_WEIGHT
     experiment_name = EXPERIMENT_NAME
     temp_std_dev = TEMP_STD_DEV
+    existing_ic_dir = EXISTING_IC_DIR
+    random_seed = RANDOM_SEED
     output_root = OUTPUT_ROOT
     checkpoint_path = CHECKPOINT_PATH
     era5_data_dir = ERA5_DATA_DIR
@@ -408,6 +436,8 @@ def main() -> None:
         parser.add_argument("--reanalysis-weight", type=float, default=reanalysis_weight)
         parser.add_argument("--experiment-name", type=str, default=experiment_name)
         parser.add_argument("--temp-std-dev", type=float, default=temp_std_dev)
+        parser.add_argument("--existing-ic-dir", type=pathlib.Path, default=existing_ic_dir)
+        parser.add_argument("--random-seed", type=int, default=random_seed)
         parser.add_argument("--dry-run", action="store_true", default=dry_run)
         cli_args = parser.parse_args()
 
@@ -423,6 +453,8 @@ def main() -> None:
         reanalysis_weight = cli_args.reanalysis_weight
         experiment_name = cli_args.experiment_name
         temp_std_dev = cli_args.temp_std_dev
+        existing_ic_dir = cli_args.existing_ic_dir
+        random_seed = cli_args.random_seed
         dry_run = cli_args.dry_run
 
     # If "control" is chosen as nudging_type, treat as blended nudging towards climatology
@@ -517,6 +549,8 @@ def main() -> None:
         era5_data_dir=era5_data_dir,
         temp_std_dev=temp_std_dev,
         output_ic_dir=ic_dir,
+        existing_ic_dir=existing_ic_dir,
+        seed=random_seed,
     )
 
     # 3. Build Stepper Override Configuration
