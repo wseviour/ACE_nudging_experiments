@@ -12,12 +12,14 @@ ACE_nudging_experiments/
 ├── ace_nudging_guide.md               # Step-by-step user guide for running experiments
 ├── nudging_code_documentation.md      # Technical documentation of changes to ACE
 ├── run_ensemble_experiment.py         # Fully automated ensemble workflow runner
+├── create_climatological_forcing.py   # SNAPSI 40-year daily climatological forcing builder
 ├── configs/                           # Reference YAML configurations for ACE2 inference
 │   ├── inference_template_blended_tau24h.yaml
 │   ├── inference_template_blended_tau8h.yaml
 │   ├── inference_template_prescribed.yaml
 │   └── inference_template_free.yaml
 └── analysis/                          # Python analysis and visualization scripts
+    ├── plot_level0_case2_comparison.py# Compares level 0 winds with ERA5 and climatology
     ├── plot_spread_comparison.py      # Plots ensemble spread across multiple experiments
     ├── plot_zonal_mean.py             # Plots zonal mean eastward wind at 60°N across levels
     └── quick_summary.py               # Prints statistical summary table for any NetCDF run

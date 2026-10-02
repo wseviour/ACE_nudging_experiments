@@ -9,7 +9,10 @@ __pycache__/
 *.pt
 *.ckpt
 *.log
+*.png
 mod_forcing_data/
+clim_forcing_data/
+climatology/
 
 # Environments and caches
 .venv/

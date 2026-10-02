@@ -45,22 +45,29 @@ N_MEMBERS = 10                       # Number of ensemble members (e.g. 10)
 BATCH_SIZE = 5                      # Members per batch (keep <= 5 to avoid GPU memory overflow)
 N_FORWARD_STEPS = 100               # Number of 6-hour forecast steps (100 steps = 25 days)
 
-# 2. Nudging Mode
-# Choose one of:
-#   - "blended": Newtonian relaxation towards ERA5 using a timescale or weights
-#   - "prescribed": Uppermost level completely overwritten with ERA5 (tau = 0)
+# 2. Nudging Mode and Target State
+# Choose nudging mode:
+#   - "blended": Newtonian relaxation towards target state using timescale (tau) or weights
+#   - "prescribed": Uppermost level completely overwritten with target state (tau = 0)
+#   - "control": SNAPSI 'control-full' experiment (relaxation towards 40-year daily climatology)
 #   - "free": No nudging applied (unconstrained free forecast)
-NUDGING_TYPE: Literal["blended", "prescribed", "free"] = "blended"
+NUDGING_TYPE: Literal["blended", "prescribed", "free", "control"] = "blended"
 
-# 3. Blended Nudging Timescale or Weights (only used when NUDGING_TYPE = "blended")
+# Choose nudging target state:
+#   - "reanalysis": Observed ERA5 for the forecast year (SNAPSI 'nudged-full')
+#   - "climatology": 40-year daily climatological state from ERA5 (SNAPSI 'control-full')
+# Note: Selecting NUDGING_TYPE = "control" automatically sets NUDGING_TARGET = "climatology".
+NUDGING_TARGET: Literal["reanalysis", "climatology"] = "reanalysis"
+
+# 3. Blended Nudging Timescale or Weights (used when NUDGING_TYPE is "blended" or "control")
 # Option A: Set the relaxation timescale (tau) in hours or days
 TAU_HOURS = 24.0                    # e.g., 24.0 for weak nudging, 8.66 for moderate nudging
 TAU_DAYS = None                     # e.g., 1.0 (if set, overrides TAU_HOURS)
 
 # Option B: Set explicit weights directly (optional, overrides TAU if set)
-# u(t+6h) = MODEL_WEIGHT * u_pred + REANALYSIS_WEIGHT * u_era5
+# u(t+6h) = MODEL_WEIGHT * u_pred + REANALYSIS_WEIGHT * u_target
 MODEL_WEIGHT = None                 # e.g., 0.5 (weight given to model prediction)
-REANALYSIS_WEIGHT = None            # e.g., 0.5 (weight given to ERA5 reanalysis)
+REANALYSIS_WEIGHT = None            # e.g., 0.5 (weight given to target reanalysis/climatology)
 
 # 4. Experiment Naming and Perturbations
 # Custom experiment name (set to None to auto-generate a descriptive name based on settings):
@@ -75,6 +82,8 @@ CHECKPOINT_PATH = pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/ace2_era5_ckpt.t
 ERA5_DATA_DIR = pathlib.Path("/disco/share/ws359/ERA5_for_ACE")
 BASE_FORCING_DIR = pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/forcing_data")
 MOD_FORCING_DIR = pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/mod_forcing_data")
+CLIM_DIR = pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/climatology")
+CLIM_FORCING_DIR = pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/clim_forcing_data")
 PYTHON_BIN = "/home/links/ws359/miniconda3/envs/ace_nudge/bin/python"
 DRY_RUN = False                     # Set to True to only generate files without executing the model
 # ==============================================================================
@@ -273,7 +282,7 @@ def create_perturbed_ics(
 
 
 def build_stepper_override(
-    nudging_type: Literal["blended", "prescribed", "free"],
+    nudging_type: Literal["blended", "prescribed", "free", "control"],
     tau_hours: float | None = None,
     tau_days: float | None = None,
     model_weight: float | None = None,
@@ -292,7 +301,7 @@ def build_stepper_override(
         override["prescribed_prognostic_names"] = [nudging_var]
         return override
 
-    # Blended nudging
+    # Blended or Control nudging (both use nudged_prognostics with timescale/weights)
     nudge_entry: dict = {}
     if tau_days is not None:
         nudge_entry["timescale_days"] = float(tau_days)
@@ -365,6 +374,7 @@ def main() -> None:
     batch_size = BATCH_SIZE
     n_forward_steps = N_FORWARD_STEPS
     nudging_type = NUDGING_TYPE
+    nudging_target = NUDGING_TARGET
     tau_hours = TAU_HOURS
     tau_days = TAU_DAYS
     model_weight = MODEL_WEIGHT
@@ -376,6 +386,8 @@ def main() -> None:
     era5_data_dir = ERA5_DATA_DIR
     base_forcing_dir = BASE_FORCING_DIR
     mod_forcing_dir = MOD_FORCING_DIR
+    clim_dir = CLIM_DIR
+    clim_forcing_dir = CLIM_FORCING_DIR
     python_bin = PYTHON_BIN
     dry_run = DRY_RUN
 
@@ -388,7 +400,8 @@ def main() -> None:
         parser.add_argument("--n-members", type=int, default=n_members)
         parser.add_argument("--batch-size", type=int, default=batch_size)
         parser.add_argument("--n-forward-steps", type=int, default=n_forward_steps)
-        parser.add_argument("--nudging-type", type=str, choices=["blended", "prescribed", "free"], default=nudging_type)
+        parser.add_argument("--nudging-type", type=str, choices=["blended", "prescribed", "free", "control"], default=nudging_type)
+        parser.add_argument("--nudging-target", type=str, choices=["reanalysis", "climatology"], default=nudging_target)
         parser.add_argument("--tau-hours", type=float, default=tau_hours)
         parser.add_argument("--tau-days", type=float, default=tau_days)
         parser.add_argument("--model-weight", type=float, default=model_weight)
@@ -403,6 +416,7 @@ def main() -> None:
         batch_size = cli_args.batch_size
         n_forward_steps = cli_args.n_forward_steps
         nudging_type = cli_args.nudging_type
+        nudging_target = cli_args.nudging_target
         tau_hours = cli_args.tau_hours
         tau_days = cli_args.tau_days
         model_weight = cli_args.model_weight
@@ -411,11 +425,29 @@ def main() -> None:
         temp_std_dev = cli_args.temp_std_dev
         dry_run = cli_args.dry_run
 
+    # If "control" is chosen as nudging_type, treat as blended nudging towards climatology
+    if nudging_type == "control":
+        nudging_target = "climatology"
+        nudging_type = "blended"
+
     # Determine experiment name if not set
     date_str = str(np.datetime64(start_date))[:10].replace("-", "")
     if experiment_name is None:
         if nudging_type == "free":
             experiment_name = f"exp_{date_str}_ens{n_members}_free"
+        elif nudging_target == "climatology":
+            if nudging_type == "prescribed":
+                experiment_name = f"exp_{date_str}_ens{n_members}_control_prescribed"
+            else:
+                if tau_days is not None:
+                    tag = f"tau{tau_days:.1f}d"
+                elif tau_hours is not None:
+                    tag = f"tau{tau_hours:.0f}h"
+                elif model_weight is not None:
+                    tag = f"mw{model_weight:.2f}_rw{reanalysis_weight:.2f}"
+                else:
+                    tag = "tau24h"
+                experiment_name = f"exp_{date_str}_ens{n_members}_control_{tag}"
         elif nudging_type == "prescribed":
             experiment_name = f"exp_{date_str}_ens{n_members}_prescribed"
         else:
@@ -436,14 +468,14 @@ def main() -> None:
     logging.info("Start Date:       %s", start_date)
     logging.info("Ensemble Size:    %d members (batch size: %d)", n_members, batch_size)
     logging.info("Forecast Length:  %d steps (%d hours / %.1f days)", n_forward_steps, n_forward_steps * 6, (n_forward_steps * 6) / 24)
-    logging.info("Nudging Mode:     %s", nudging_type)
+    logging.info("Nudging Mode:     %s (target: %s)", nudging_type, nudging_target if nudging_type != "free" else "none")
     if nudging_type == "blended":
         if tau_days:
             logging.info("Timescale (tau):  %.2f days", tau_days)
         elif tau_hours:
             logging.info("Timescale (tau):  %.2f hours", tau_hours)
         elif model_weight is not None:
-            logging.info("Weights:          model=%.2f, reanalysis=%.2f", model_weight, reanalysis_weight)
+            logging.info("Weights:          model=%.2f, target=%.2f", model_weight, reanalysis_weight)
     logging.info("Destination:      %s", exp_dir)
     logging.info("==========================================================")
 
@@ -453,14 +485,26 @@ def main() -> None:
     start_year = int(str(start_dt)[:4])
     end_year = int(str(end_dt)[:4])
     if nudging_type in ("blended", "prescribed"):
-        for yr in range(start_year, end_year + 1):
-            forcing_dir = ensure_forcing_data(
-                year=yr,
-                base_forcing_dir=base_forcing_dir,
-                era5_data_dir=era5_data_dir,
-                mod_forcing_dir=mod_forcing_dir,
-                nudging_var="eastward_wind_0",
-            )
+        if nudging_target == "climatology":
+            from create_climatological_forcing import ensure_climatological_forcing
+            for yr in range(start_year, end_year + 1):
+                forcing_dir = ensure_climatological_forcing(
+                    year=yr,
+                    base_forcing_dir=base_forcing_dir,
+                    era5_dir=era5_data_dir,
+                    clim_dir=clim_dir,
+                    clim_forcing_dir=clim_forcing_dir,
+                    nudging_var="eastward_wind_0",
+                )
+        else:
+            for yr in range(start_year, end_year + 1):
+                forcing_dir = ensure_forcing_data(
+                    year=yr,
+                    base_forcing_dir=base_forcing_dir,
+                    era5_data_dir=era5_data_dir,
+                    mod_forcing_dir=mod_forcing_dir,
+                    nudging_var="eastward_wind_0",
+                )
     else:
         forcing_dir = base_forcing_dir
 
@@ -547,6 +591,7 @@ def main() -> None:
         "batch_size": batch_size,
         "n_forward_steps": n_forward_steps,
         "nudging_type": nudging_type,
+        "nudging_target": nudging_target,
         "tau_hours": tau_hours,
         "tau_days": tau_days,
         "model_weight": model_weight,

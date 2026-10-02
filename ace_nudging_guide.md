@@ -10,15 +10,18 @@ In weather forecasting, chaotic atmospheric dynamics cause perturbed ensemble me
 
 The **SNAPSI** (Stratospheric Nudging And Predictable Surface Impacts) experiment tests this by "nudging" the model's stratosphere towards historical observations (ERA5 reanalysis), while letting the rest of the atmosphere evolve freely.
 
-In ACE2, we can run three types of forecasts:
+In ACE2, we can run four types of forecasts:
 1. **Free Forecast ($\tau = \infty$):** No nudging. The model runs completely on its own.
 2. **Prescribed Nudging ($\tau = 0$):** Strongest nudging. At every 6-hour timestep, the uppermost zonal wind (`eastward_wind_0`, ~1 hPa) is completely replaced with ERA5 observations.
-3. **Blended Relaxation Nudging ($\tau > 0$):** Gentle nudging. The wind at the next timestep is calculated as a blend of the model's own prediction and ERA5:
-   $$u(t + 6\text{h}) = w_{\text{model}} \cdot u_{\text{pred}} + w_{\text{reanalysis}} \cdot u_{\text{reanalysis}}$$
+3. **Blended Relaxation Nudging ($\tau > 0$):** Gentle nudging. The wind at the next timestep is calculated as a blend of the model's own prediction and target reanalysis:
+   $$u(t + 6\text{h}) = w_{\text{model}} \cdot u_{\text{pred}} + w_{\text{reanalysis}} \cdot u_{\text{target}}$$
    where the weights are calculated from a relaxation timescale $\tau$:
    $$w_{\text{model}} = e^{-6\text{h} / \tau}, \quad w_{\text{reanalysis}} = 1 - w_{\text{model}}$$
    - For a **24-hour timescale ($\tau = 24\,\text{h}$)**: $w_{\text{model}} \approx 0.78$, $w_{\text{reanalysis}} \approx 0.22$.
    - For an **8.7-hour timescale ($\tau \approx 8.7\,\text{h}$)**: $w_{\text{model}} = 0.50$, $w_{\text{reanalysis}} = 0.50$.
+4. **SNAPSI Control Forecast (`control-full`):** To isolate the impact of anomalous stratospheric events (such as an SSW) from the seasonal background cycle, SNAPSI nudges the upper stratosphere towards the **daily climatological state** rather than the observed state of the forecast year:
+   $$u(t + 6\text{h}) = w_{\text{model}} \cdot u_{\text{pred}} + w_{\text{reanalysis}} \cdot u_{\text{clim}}$$
+   where $u_{\text{clim}}$ is a smoothed 40-year daily climatological annual cycle computed from ERA5 (1980–2020).
 
 ---
 
@@ -92,11 +95,15 @@ N_MEMBERS = 10                       # Number of ensemble members (e.g. 10)
 BATCH_SIZE = 5                      # Members per batch (keep <= 5 to avoid GPU memory overflow)
 N_FORWARD_STEPS = 100               # Number of 6-hour forecast steps (100 steps = 25 days)
 
-# 2. Nudging Mode
-# Choose one of: "blended", "prescribed", or "free"
+# 2. Nudging Mode and Target State
+# Choose nudging mode: "blended", "prescribed", "control", or "free"
 NUDGING_TYPE = "blended"
 
-# 3. Blended Nudging Timescale or Weights (used when NUDGING_TYPE = "blended")
+# Choose nudging target state: "reanalysis" (forecast year) or "climatology" (40-year mean)
+# Note: Selecting NUDGING_TYPE = "control" automatically sets NUDGING_TARGET = "climatology".
+NUDGING_TARGET = "reanalysis"
+
+# 3. Blended Nudging Timescale or Weights (used when NUDGING_TYPE is "blended" or "control")
 TAU_HOURS = 24.0                    # Timescale in hours (e.g., 24.0 for weak nudging, 8.66 for moderate)
 TAU_DAYS = None                     # Timescale in days (e.g., 1.0)
 MODEL_WEIGHT = None                 # Optional direct model weight
@@ -112,6 +119,7 @@ TEMP_STD_DEV = 0.1                  # Noise added to temperatures in Kelvin (Mem
 ### Step 5.2: Common Experiment Configurations
 
 #### Case A: Weak Blended Nudging ($\tau = 24\,\text{hours}$, default)
+Nudges towards the actual forecast year's ERA5 reanalysis state:
 ```python
 NUDGING_TYPE = "blended"
 TAU_HOURS = 24.0
@@ -136,6 +144,14 @@ NUDGING_TYPE = "prescribed"
 NUDGING_TYPE = "free"
 ```
 
+#### Case E: SNAPSI Control Forecast (`control-full`, nudged to climatology)
+Nudges the uppermost level towards the 40-year daily smoothed ERA5 climatology rather than the forecast year's observations:
+```python
+NUDGING_TYPE = "control"
+TAU_HOURS = 24.0
+```
+*(The script will automatically detect that climatological forcing is needed, generate the 40-year climatology if not already created, and build the year-specific forcing file!)*
+
 ---
 
 ### Step 5.3: Run the Script
@@ -152,7 +168,29 @@ That's it! The script will:
 
 ---
 
-## 6. Understanding the Output Files
+---
+
+## 6. Climatological Forcing and Leap Day Handling (SNAPSI Protocol)
+
+When running a SNAPSI control experiment (`NUDGING_TYPE = "control"`), the model nudges towards a smoothed daily climatology rather than the specific weather observations of that year.
+
+This methodology follows **Section 3.1 of Hitchcock et al. (2022)**:
+1. **Base Period:** Computed across a 40-year baseline from **1980 to 2020** using 40 annual July-to-June cycles (each cycle is 1,460 6-hour timesteps = 365 days).
+2. **Leap Day Treatment:** In leap years, the 365 consecutive days following 1 July are used, omitting 30 June (so 29 February is indexed as 1 March). This ensures that every baseline cycle contains exactly 365 days and places any subtle endpoint discontinuity across 30 June / 1 July—completely outside the winter/spring forecast periods of interest.
+3. **Triangular Smoothing:** The raw 365-day multi-year mean is smoothed using a **121-point (30-day) triangular filter** with circular (periodic) boundary conditions.
+4. **Calendar Alignment & Leap Forecast Years:** The smoothed July-to-June annual cycle is reordered to a standard calendar year (1 January to 31 December, 1,460 steps). For leap forecast years (such as 2020 with 1,464 steps), 29 February is assigned the 1 March climatological value.
+
+### Dedicated Climatology Script
+If needed, you can generate or inspect climatological forcing directly using `create_climatological_forcing.py`:
+```bash
+# Generate climatological forcing for a specific forecast year:
+python create_climatological_forcing.py --year 2018
+```
+*(Note: When using `run_ensemble_experiment.py`, this is called automatically if the file does not already exist!)*
+
+---
+
+## 7. Understanding the Output Files
 
 All model output files are written to:
 ```
@@ -167,36 +205,44 @@ Inside that folder, you will find:
 
 ---
 
-## 7. Analyzing and Plotting Your Results
+## 8. Analyzing and Plotting Your Results
 
-We have included three helper scripts in the `analysis/` folder:
+We have included four helper scripts in the `analysis/` folder:
 
 ### 1. Quick Statistical Summary
 To print a quick table of the wind speeds and ensemble spreads across all vertical levels:
 ```bash
-python analysis/quick_summary.py /home/links/ws359/ACE/ACE_output/exp_20180125_blended_tau24h/autoregressive_predictions.nc
+python analysis/quick_summary.py /home/links/ws359/ACE/ACE_output/<experiment_name>/autoregressive_predictions.nc
 ```
 
 ### 2. Plotting Zonal Mean Winds Across Levels
 To plot the 60°N zonal mean eastward wind for all 8 levels (comparing your model ensemble against ERA5 reanalysis truth):
 ```bash
-python analysis/plot_zonal_mean.py /home/links/ws359/ACE/ACE_output/exp_20180125_blended_tau24h/autoregressive_predictions.nc
+python analysis/plot_zonal_mean.py /home/links/ws359/ACE/ACE_output/<experiment_name>/autoregressive_predictions.nc
 ```
 This will save an image named `zonal_mean_u_all_levels.png` in your experiment directory.
 
-### 3. Comparing Ensemble Spread Between Experiments
-To compare the spread $\sigma(U)$ across multiple experiments (Free vs Prescribed vs Blended):
+### 3. Comparing Level 0 Winds with Climatology and Observation
+For SNAPSI Case Studies (e.g., 2018 or 2019 SSW), to plot ensemble members, ensemble mean, observed ERA5, and 40-year climatology:
+```bash
+python analysis/plot_level0_case2_comparison.py \
+  --exp-nc /home/links/ws359/ACE/ACE_output/<experiment_name>/autoregressive_predictions.nc \
+  --save-path comparison_level0.png
+```
+
+### 4. Comparing Ensemble Spread Between Experiments
+To compare the spread $\sigma(U)$ across multiple experiments (Free vs Prescribed vs Blended vs Control):
 ```bash
 python analysis/plot_spread_comparison.py --save-path spread_comparison.png
 ```
 
 ---
 
-## 8. Troubleshooting Common Issues
+## 9. Troubleshooting Common Issues
 
 ### Issue 1: "CUDA out of memory" (OOM)
 - **Cause:** Too many ensemble members are running simultaneously in the GPU VRAM.
-- **Fix:** Lower the `--batch-size` parameter in `run_ensemble_experiment.py` (e.g., from `--batch-size 5` to `--batch-size 3` or `2`).
+- **Fix:** Lower the `BATCH_SIZE` setting inside `run_ensemble_experiment.py` (e.g., from `BATCH_SIZE = 5` to `BATCH_SIZE = 3` or `2`).
 
 ### Issue 2: "version CXXABI_1.3.15 not found"
 - **Cause:** The system is picking up an older system library instead of the conda environment's library.
@@ -215,6 +261,9 @@ python analysis/plot_spread_comparison.py --save-path spread_comparison.png
 1. `conda activate ace_nudge`
 2. `export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
 3. `export LD_LIBRARY_PATH=/home/links/ws359/miniconda3/envs/ace_nudge/lib:$LD_LIBRARY_PATH`
-4. `python run_ensemble_experiment.py --nudging-type blended --tau-hours 24.0 ...`
-5. Check output in `/home/links/ws359/ACE/ACE_output/`
-6. Plot with `python analysis/plot_zonal_mean.py ...`
+4. Set experiment configuration at top of `run_ensemble_experiment.py` and run:
+   ```bash
+   python run_ensemble_experiment.py
+   ```
+5. Check output in `/home/links/ws359/ACE/ACE_output/<experiment_name>/`
+6. Plot and analyze using the scripts in `analysis/`
