@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Output and data files
+*.nc
+*.tar
+*.pt
+*.ckpt
+*.log
+mod_forcing_data/
+
+# Environments and caches
+.venv/
+.pytest_cache/
+.DS_Store

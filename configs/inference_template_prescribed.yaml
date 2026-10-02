@@ -1,0 +1,43 @@
+# ACE2 Template Config: Prescribed Nudging (tau = 0, instantaneous replacement)
+experiment_dir: /home/links/ws359/ACE/ACE_output/template_prescribed
+n_forward_steps: 100
+forward_steps_in_memory: 10
+checkpoint_path: /home/links/ws359/ACE/ACE2-ERA5/ace2_era5_ckpt.tar
+logging:
+  log_to_screen: true
+  log_to_wandb: false
+  log_to_file: true
+  project: ace
+initial_condition:
+  path: /home/links/ws359/ACE/ACE2-ERA5/ensemble_ic_20180125.nc
+forcing_loader:
+  dataset:
+    data_path: /home/links/ws359/ACE/ACE2-ERA5/mod_forcing_data
+  num_data_workers: 4
+stepper_override:
+  ocean: keep
+  prescribed_prognostic_names:
+    - eastward_wind_0
+data_writer:
+  save_prediction_files: true
+  save_monthly_files: false
+  names:
+    - TMP2m
+    - VGRD10m
+    - PRATEsfc
+    - air_temperature_0
+    - air_temperature_1
+    - air_temperature_2
+    - air_temperature_3
+    - air_temperature_4
+    - air_temperature_5
+    - air_temperature_6
+    - air_temperature_7
+    - eastward_wind_0
+    - eastward_wind_1
+    - eastward_wind_2
+    - eastward_wind_3
+    - eastward_wind_4
+    - eastward_wind_5
+    - eastward_wind_6
+    - eastward_wind_7
