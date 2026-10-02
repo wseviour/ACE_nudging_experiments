@@ -4,14 +4,16 @@ run_ensemble_experiment.py
 
 Automated workflow script for running ACE2 ensemble forecast experiments with nudging.
 
-Features:
-  1. Automated initial condition generation from ERA5 with Gaussian temperature perturbations.
-  2. Automated forcing dataset preparation (injecting reanalysis level-0 wind into forcing NetCDF).
-  3. Automatic batch chunking of ensemble members to prevent GPU out-of-memory (OOM) errors.
-  4. Automatic generation of ACE2 inference YAML configuration files for each batch.
-  5. Execution of ACE2 inference across batches with appropriate CUDA allocator configurations.
-  6. Automatic concatenation of output predictions across chunks into a single unified NetCDF.
-  7. Output directed to /home/links/ws359/ACE/ACE_output/<experiment_name>.
+Instructions for Myles:
+  1. Open this file and edit the parameters in the 'EXPERIMENT CONFIGURATION' section below.
+  2. Run the script from the terminal with:
+         python run_ensemble_experiment.py
+  3. The script will automatically:
+       - Generate initial conditions with temperature perturbations for all members.
+       - Prepare the modified forcing file containing ERA5 level-0 wind.
+       - Divide the ensemble into safe batches to avoid GPU Out-Of-Memory errors.
+       - Run ACE2 inference for each batch.
+       - Merge all output chunks into a single NetCDF file in /home/links/ws359/ACE/ACE_output/<experiment_name>.
 """
 
 from __future__ import annotations
@@ -30,6 +32,52 @@ from typing import Literal
 import numpy as np
 import xarray as xr
 import yaml
+
+
+# ==============================================================================
+# EXPERIMENT CONFIGURATION
+# Edit the parameters below to configure your ensemble simulation run!
+# ==============================================================================
+
+# 1. Forecast Dates and Ensemble Size
+START_DATE = "2018-01-25T00:00:00"  # Start date/time (e.g. "2018-01-25" or "2018-01-25T00:00:00")
+N_MEMBERS = 10                       # Number of ensemble members (e.g. 10)
+BATCH_SIZE = 5                      # Members per batch (keep <= 5 to avoid GPU memory overflow)
+N_FORWARD_STEPS = 100               # Number of 6-hour forecast steps (100 steps = 25 days)
+
+# 2. Nudging Mode
+# Choose one of:
+#   - "blended": Newtonian relaxation towards ERA5 using a timescale or weights
+#   - "prescribed": Uppermost level completely overwritten with ERA5 (tau = 0)
+#   - "free": No nudging applied (unconstrained free forecast)
+NUDGING_TYPE: Literal["blended", "prescribed", "free"] = "blended"
+
+# 3. Blended Nudging Timescale or Weights (only used when NUDGING_TYPE = "blended")
+# Option A: Set the relaxation timescale (tau) in hours or days
+TAU_HOURS = 24.0                    # e.g., 24.0 for weak nudging, 8.66 for moderate nudging
+TAU_DAYS = None                     # e.g., 1.0 (if set, overrides TAU_HOURS)
+
+# Option B: Set explicit weights directly (optional, overrides TAU if set)
+# u(t+6h) = MODEL_WEIGHT * u_pred + REANALYSIS_WEIGHT * u_era5
+MODEL_WEIGHT = None                 # e.g., 0.5 (weight given to model prediction)
+REANALYSIS_WEIGHT = None            # e.g., 0.5 (weight given to ERA5 reanalysis)
+
+# 4. Experiment Naming and Perturbations
+# Custom experiment name (set to None to auto-generate a descriptive name based on settings):
+EXPERIMENT_NAME = None
+
+# Gaussian noise standard deviation added to temperature fields for perturbed members 1..N-1:
+TEMP_STD_DEV = 0.1                  # in Kelvin (0.1 K is standard; Member 0 is unperturbed)
+
+# 5. Paths and Environment
+OUTPUT_ROOT = pathlib.Path("/home/links/ws359/ACE/ACE_output")
+CHECKPOINT_PATH = pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/ace2_era5_ckpt.tar")
+ERA5_DATA_DIR = pathlib.Path("/disco/share/ws359/ERA5_for_ACE")
+BASE_FORCING_DIR = pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/forcing_data")
+MOD_FORCING_DIR = pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/mod_forcing_data")
+PYTHON_BIN = "/home/links/ws359/miniconda3/envs/ace_nudge/bin/python"
+DRY_RUN = False                     # Set to True to only generate files without executing the model
+# ==============================================================================
 
 
 logging.basicConfig(
@@ -127,11 +175,11 @@ def ensure_forcing_data(
 
     if not base_forcing_file.exists():
         raise FileNotFoundError(
-            f"Base forcing file not found: {base_forcing_file}. Please check --base-forcing-dir."
+            f"Base forcing file not found: {base_forcing_file}. Please check base_forcing_dir."
         )
     if not era5_file.exists():
         raise FileNotFoundError(
-            f"ERA5 file not found: {era5_file}. Please check --era5-data-dir."
+            f"ERA5 file not found: {era5_file}. Please check era5_data_dir."
         )
 
     logging.info(
@@ -311,174 +359,125 @@ def merge_prediction_chunks(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Automated runner for ACE2 ensemble forecast experiments with upper-level nudging."
-    )
-    parser.add_argument(
-        "--start-date",
-        type=str,
-        default="2018-01-25T00:00:00",
-        help="Start date/time for forecast (e.g. '2018-01-25' or '2018-01-25T00:00:00').",
-    )
-    parser.add_argument(
-        "--n-members",
-        type=int,
-        default=10,
-        help="Total number of ensemble members to run (default: 10).",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=5,
-        help="Number of members per inference batch to prevent GPU OOM (default: 5).",
-    )
-    parser.add_argument(
-        "--n-forward-steps",
-        type=int,
-        default=100,
-        help="Number of 6-hour forecast steps to run (100 steps = 25 days, default: 100).",
-    )
-    parser.add_argument(
-        "--nudging-type",
-        type=str,
-        choices=["blended", "prescribed", "free"],
-        default="blended",
-        help="Type of nudging: 'blended' (relaxation with weights/timescale), 'prescribed' (tau=0), or 'free' (tau=inf).",
-    )
-    parser.add_argument(
-        "--tau-hours",
-        type=float,
-        default=None,
-        help="Effective nudging relaxation timescale tau in hours (e.g. 24.0 or 8.66).",
-    )
-    parser.add_argument(
-        "--tau-days",
-        type=float,
-        default=None,
-        help="Effective nudging relaxation timescale tau in days (e.g. 1.0).",
-    )
-    parser.add_argument(
-        "--model-weight",
-        type=float,
-        default=None,
-        help="Explicit weight for model prediction (0 <= w <= 1).",
-    )
-    parser.add_argument(
-        "--reanalysis-weight",
-        type=float,
-        default=None,
-        help="Explicit weight for reanalysis observation (0 <= w <= 1).",
-    )
-    parser.add_argument(
-        "--experiment-name",
-        type=str,
-        default=None,
-        help="Custom name for experiment directory. Default: auto-generated based on date and nudging configuration.",
-    )
-    parser.add_argument(
-        "--temp-std-dev",
-        type=float,
-        default=0.1,
-        help="Standard deviation of Gaussian noise added to temperature fields for ensemble members (in K, default: 0.1).",
-    )
-    parser.add_argument(
-        "--output-root",
-        type=pathlib.Path,
-        default=pathlib.Path("/home/links/ws359/ACE/ACE_output"),
-        help="Root directory where experiment outputs will be stored (default: /home/links/ws359/ACE/ACE_output).",
-    )
-    parser.add_argument(
-        "--checkpoint-path",
-        type=pathlib.Path,
-        default=pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/ace2_era5_ckpt.tar"),
-        help="Path to ACE2 checkpoint file.",
-    )
-    parser.add_argument(
-        "--era5-data-dir",
-        type=pathlib.Path,
-        default=pathlib.Path("/disco/share/ws359/ERA5_for_ACE"),
-        help="Directory containing era5_1deg_{year}.nc files.",
-    )
-    parser.add_argument(
-        "--base-forcing-dir",
-        type=pathlib.Path,
-        default=pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/forcing_data"),
-        help="Directory containing base forcing_{year}.nc files.",
-    )
-    parser.add_argument(
-        "--mod-forcing-dir",
-        type=pathlib.Path,
-        default=pathlib.Path("/home/links/ws359/ACE/ACE2-ERA5/mod_forcing_data"),
-        help="Directory for modified forcing files containing reanalysis winds.",
-    )
-    parser.add_argument(
-        "--python-bin",
-        type=str,
-        default="/home/links/ws359/miniconda3/envs/ace_nudge/bin/python",
-        help="Path to python executable with ace_nudge environment.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Prepare ICs, forcing data, and configs without executing model inference.",
-    )
+    # Read parameters directly from the configuration block at the top of the file
+    start_date = START_DATE
+    n_members = N_MEMBERS
+    batch_size = BATCH_SIZE
+    n_forward_steps = N_FORWARD_STEPS
+    nudging_type = NUDGING_TYPE
+    tau_hours = TAU_HOURS
+    tau_days = TAU_DAYS
+    model_weight = MODEL_WEIGHT
+    reanalysis_weight = REANALYSIS_WEIGHT
+    experiment_name = EXPERIMENT_NAME
+    temp_std_dev = TEMP_STD_DEV
+    output_root = OUTPUT_ROOT
+    checkpoint_path = CHECKPOINT_PATH
+    era5_data_dir = ERA5_DATA_DIR
+    base_forcing_dir = BASE_FORCING_DIR
+    mod_forcing_dir = MOD_FORCING_DIR
+    python_bin = PYTHON_BIN
+    dry_run = DRY_RUN
 
-    args = parser.parse_args()
+    # Optional: allow command-line arguments to override in-script settings if provided
+    if len(sys.argv) > 1:
+        parser = argparse.ArgumentParser(
+            description="Automated runner for ACE2 ensemble forecast experiments with upper-level nudging."
+        )
+        parser.add_argument("--start-date", type=str, default=start_date)
+        parser.add_argument("--n-members", type=int, default=n_members)
+        parser.add_argument("--batch-size", type=int, default=batch_size)
+        parser.add_argument("--n-forward-steps", type=int, default=n_forward_steps)
+        parser.add_argument("--nudging-type", type=str, choices=["blended", "prescribed", "free"], default=nudging_type)
+        parser.add_argument("--tau-hours", type=float, default=tau_hours)
+        parser.add_argument("--tau-days", type=float, default=tau_days)
+        parser.add_argument("--model-weight", type=float, default=model_weight)
+        parser.add_argument("--reanalysis-weight", type=float, default=reanalysis_weight)
+        parser.add_argument("--experiment-name", type=str, default=experiment_name)
+        parser.add_argument("--temp-std-dev", type=float, default=temp_std_dev)
+        parser.add_argument("--dry-run", action="store_true", default=dry_run)
+        cli_args = parser.parse_args()
 
-    # Determine experiment name if not provided
-    date_str = str(np.datetime64(args.start_date))[:10].replace("-", "")
-    if args.experiment_name is None:
-        if args.nudging_type == "free":
-            args.experiment_name = f"exp_{date_str}_ens{args.n_members}_free"
-        elif args.nudging_type == "prescribed":
-            args.experiment_name = f"exp_{date_str}_ens{args.n_members}_prescribed"
+        start_date = cli_args.start_date
+        n_members = cli_args.n_members
+        batch_size = cli_args.batch_size
+        n_forward_steps = cli_args.n_forward_steps
+        nudging_type = cli_args.nudging_type
+        tau_hours = cli_args.tau_hours
+        tau_days = cli_args.tau_days
+        model_weight = cli_args.model_weight
+        reanalysis_weight = cli_args.reanalysis_weight
+        experiment_name = cli_args.experiment_name
+        temp_std_dev = cli_args.temp_std_dev
+        dry_run = cli_args.dry_run
+
+    # Determine experiment name if not set
+    date_str = str(np.datetime64(start_date))[:10].replace("-", "")
+    if experiment_name is None:
+        if nudging_type == "free":
+            experiment_name = f"exp_{date_str}_ens{n_members}_free"
+        elif nudging_type == "prescribed":
+            experiment_name = f"exp_{date_str}_ens{n_members}_prescribed"
         else:
-            if args.tau_days is not None:
-                tag = f"tau{args.tau_days:.1f}d"
-            elif args.tau_hours is not None:
-                tag = f"tau{args.tau_hours:.0f}h"
-            elif args.model_weight is not None:
-                tag = f"mw{args.model_weight:.2f}_rw{args.reanalysis_weight:.2f}"
+            if tau_days is not None:
+                tag = f"tau{tau_days:.1f}d"
+            elif tau_hours is not None:
+                tag = f"tau{tau_hours:.0f}h"
+            elif model_weight is not None:
+                tag = f"mw{model_weight:.2f}_rw{reanalysis_weight:.2f}"
             else:
                 tag = "tau24h"
-            args.experiment_name = f"exp_{date_str}_ens{args.n_members}_blended_{tag}"
+            experiment_name = f"exp_{date_str}_ens{n_members}_blended_{tag}"
 
-    exp_dir = args.output_root / args.experiment_name
+    exp_dir = output_root / experiment_name
     exp_dir.mkdir(parents=True, exist_ok=True)
-    logging.info("=== ACE2 Ensemble Experiment: %s ===", args.experiment_name)
-    logging.info("Destination directory: %s", exp_dir)
+    logging.info("==========================================================")
+    logging.info("Starting ACE2 Ensemble Experiment: %s", experiment_name)
+    logging.info("Start Date:       %s", start_date)
+    logging.info("Ensemble Size:    %d members (batch size: %d)", n_members, batch_size)
+    logging.info("Forecast Length:  %d steps (%d hours / %.1f days)", n_forward_steps, n_forward_steps * 6, (n_forward_steps * 6) / 24)
+    logging.info("Nudging Mode:     %s", nudging_type)
+    if nudging_type == "blended":
+        if tau_days:
+            logging.info("Timescale (tau):  %.2f days", tau_days)
+        elif tau_hours:
+            logging.info("Timescale (tau):  %.2f hours", tau_hours)
+        elif model_weight is not None:
+            logging.info("Weights:          model=%.2f, reanalysis=%.2f", model_weight, reanalysis_weight)
+    logging.info("Destination:      %s", exp_dir)
+    logging.info("==========================================================")
 
     # 1. Prepare Forcing Data (if nudging is requested)
-    year = int(str(np.datetime64(args.start_date))[:4])
-    if args.nudging_type in ("blended", "prescribed"):
+    year = int(str(np.datetime64(start_date))[:4])
+    if nudging_type in ("blended", "prescribed"):
         forcing_dir = ensure_forcing_data(
             year=year,
-            base_forcing_dir=args.base_forcing_dir,
-            era5_data_dir=args.era5_data_dir,
-            mod_forcing_dir=args.mod_forcing_dir,
+            base_forcing_dir=base_forcing_dir,
+            era5_data_dir=era5_data_dir,
+            mod_forcing_dir=mod_forcing_dir,
             nudging_var="eastward_wind_0",
         )
     else:
-        forcing_dir = args.base_forcing_dir
+        forcing_dir = base_forcing_dir
 
     # 2. Generate Initial Conditions (chunked into batches)
     ic_dir = exp_dir / "initial_conditions"
     ic_chunks = create_perturbed_ics(
-        start_time=args.start_date,
-        n_members=args.n_members,
-        batch_size=args.batch_size,
-        era5_data_dir=args.era5_data_dir,
-        temp_std_dev=args.temp_std_dev,
+        start_time=start_date,
+        n_members=n_members,
+        batch_size=batch_size,
+        era5_data_dir=era5_data_dir,
+        temp_std_dev=temp_std_dev,
         output_ic_dir=ic_dir,
     )
 
     # 3. Build Stepper Override Configuration
     stepper_override = build_stepper_override(
-        nudging_type=args.nudging_type,
-        tau_hours=args.tau_hours,
-        tau_days=args.tau_days,
-        model_weight=args.model_weight,
-        reanalysis_weight=args.reanalysis_weight,
+        nudging_type=nudging_type,
+        tau_hours=tau_hours,
+        tau_days=tau_days,
+        model_weight=model_weight,
+        reanalysis_weight=reanalysis_weight,
         nudging_var="eastward_wind_0",
     )
 
@@ -493,9 +492,9 @@ def main() -> None:
 
         config_dict = {
             "experiment_dir": str(chunk_out_dir),
-            "n_forward_steps": args.n_forward_steps,
-            "forward_steps_in_memory": min(10, args.n_forward_steps),
-            "checkpoint_path": str(args.checkpoint_path),
+            "n_forward_steps": n_forward_steps,
+            "forward_steps_in_memory": min(10, n_forward_steps),
+            "checkpoint_path": str(checkpoint_path),
             "logging": {
                 "log_to_screen": True,
                 "log_to_wandb": False,
@@ -524,11 +523,11 @@ def main() -> None:
             yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
         logging.info("Created configuration for chunk %d: %s", idx, chunk_config_path)
 
-        if not args.dry_run:
+        if not dry_run:
             logging.info("--- Starting inference for chunk %d of %d ---", idx + 1, len(ic_chunks))
-            run_inference_chunk(chunk_config_path, python_bin=args.python_bin)
+            run_inference_chunk(chunk_config_path, python_bin=python_bin)
 
-    if args.dry_run:
+    if dry_run:
         logging.info("Dry-run complete. Configs and initial conditions generated without executing model.")
         return
 
@@ -538,24 +537,26 @@ def main() -> None:
 
     # Save summary metadata
     summary = {
-        "experiment_name": args.experiment_name,
-        "start_date": args.start_date,
-        "n_members": args.n_members,
-        "batch_size": args.batch_size,
-        "n_forward_steps": args.n_forward_steps,
-        "nudging_type": args.nudging_type,
-        "tau_hours": args.tau_hours,
-        "tau_days": args.tau_days,
-        "model_weight": args.model_weight,
-        "reanalysis_weight": args.reanalysis_weight,
-        "temp_std_dev": args.temp_std_dev,
+        "experiment_name": experiment_name,
+        "start_date": start_date,
+        "n_members": n_members,
+        "batch_size": batch_size,
+        "n_forward_steps": n_forward_steps,
+        "nudging_type": nudging_type,
+        "tau_hours": tau_hours,
+        "tau_days": tau_days,
+        "model_weight": model_weight,
+        "reanalysis_weight": reanalysis_weight,
+        "temp_std_dev": temp_std_dev,
         "output_predictions": str(merged_output_file),
     }
     with open(exp_dir / "experiment_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
-    logging.info("=== Experiment %s completed successfully! ===", args.experiment_name)
+    logging.info("==========================================================")
+    logging.info("Experiment %s completed successfully!", experiment_name)
     logging.info("Final merged output: %s", merged_output_file)
+    logging.info("==========================================================")
 
 
 if __name__ == "__main__":

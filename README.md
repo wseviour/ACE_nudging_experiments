@@ -10,9 +10,9 @@ This repository contains configuration files, automated execution workflows, ana
 ACE_nudging_experiments/
 ├── README.md                          # Repository overview (this file)
 ├── ace_nudging_guide.md               # Step-by-step user guide for running experiments
-├── nudging_code_documentation.md      # Technical documentation of the changes in the ACE codebase
+├── nudging_code_documentation.md      # Technical documentation of changes to ACE
 ├── run_ensemble_experiment.py         # Fully automated ensemble workflow runner
-├── configs/                           # Template YAML configurations for ACE2 inference
+├── configs/                           # Reference YAML configurations for ACE2 inference
 │   ├── inference_template_blended_tau24h.yaml
 │   ├── inference_template_blended_tau8h.yaml
 │   ├── inference_template_prescribed.yaml
@@ -34,24 +34,22 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export LD_LIBRARY_PATH=/home/links/ws359/miniconda3/envs/ace_nudge/lib:$LD_LIBRARY_PATH
 ```
 
-### 2. Run an Automated Ensemble Forecast
-To run a 10-member ensemble with weak nudging ($\tau = 24\,\text{h}$) starting on January 25, 2018:
+### 2. Configure and Run an Ensemble Forecast
+Open `run_ensemble_experiment.py` and adjust the parameters in the `EXPERIMENT CONFIGURATION` section at the top of the file (e.g. `START_DATE`, `N_MEMBERS`, `NUDGING_TYPE`, `TAU_HOURS`).
+
+Then simply run:
 ```bash
-python run_ensemble_experiment.py \
-  --start-date 2018-01-25T00:00:00 \
-  --n-members 10 \
-  --batch-size 5 \
-  --n-forward-steps 100 \
-  --nudging-type blended \
-  --tau-hours 24.0 \
-  --experiment-name exp_20180125_blended_tau24h
+python run_ensemble_experiment.py
 ```
 
-Output datasets will be written to `/home/links/ws359/ACE/ACE_output/<experiment_name>/`.
+The script will automatically generate the initial conditions, prepare the modified forcing data, batch the ensemble members to prevent GPU out-of-memory errors, execute the forecast, and merge the predictions into:
+```
+/home/links/ws359/ACE/ACE_output/<experiment_name>/autoregressive_predictions.nc
+```
 
 ### 3. Analyze the Results
 ```bash
-python analysis/plot_zonal_mean.py /home/links/ws359/ACE/ACE_output/exp_20180125_blended_tau24h/autoregressive_predictions.nc
+python analysis/plot_zonal_mean.py /home/links/ws359/ACE/ACE_output/<experiment_name>/autoregressive_predictions.nc
 ```
 
 For full details, see [**`ace_nudging_guide.md`**](ace_nudging_guide.md) and [**`nudging_code_documentation.md`**](nudging_code_documentation.md).

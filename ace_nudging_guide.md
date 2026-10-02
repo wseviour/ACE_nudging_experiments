@@ -73,62 +73,82 @@ We have created an automated script, **`run_ensemble_experiment.py`**, that hand
 
 ---
 
-## 5. Command-Line Examples
+## 5. Configuring and Running Your Experiment
 
-Navigate to the `ACE_nudging_experiments` directory:
+You do not need to type long command-line arguments! All experiment settings are set directly inside **`run_ensemble_experiment.py`**.
+
+### Step 5.1: Open `run_ensemble_experiment.py`
+Open `run_ensemble_experiment.py` in your favorite editor (e.g., VS Code or nano):
 ```bash
-cd /home/links/ws359/ACE/ACE_nudging_experiments
+nano run_ensemble_experiment.py
 ```
 
-### Example A: Run a Weak Nudging Experiment ($\tau = 24\,\text{hours}$)
-To run a 10-member ensemble for 25 days (100 six-hour steps) starting on January 25, 2018:
-```bash
-python run_ensemble_experiment.py \
-  --start-date 2018-01-25T00:00:00 \
-  --n-members 10 \
-  --batch-size 5 \
-  --n-forward-steps 100 \
-  --nudging-type blended \
-  --tau-hours 24.0 \
-  --experiment-name exp_20180125_blended_tau24h
+Right near the top of the file, you will find the **`EXPERIMENT CONFIGURATION`** section:
+
+```python
+# 1. Forecast Dates and Ensemble Size
+START_DATE = "2018-01-25T00:00:00"  # Start date/time (e.g. "2018-01-25" or "2018-01-25T00:00:00")
+N_MEMBERS = 10                       # Number of ensemble members (e.g. 10)
+BATCH_SIZE = 5                      # Members per batch (keep <= 5 to avoid GPU memory overflow)
+N_FORWARD_STEPS = 100               # Number of 6-hour forecast steps (100 steps = 25 days)
+
+# 2. Nudging Mode
+# Choose one of: "blended", "prescribed", or "free"
+NUDGING_TYPE = "blended"
+
+# 3. Blended Nudging Timescale or Weights (used when NUDGING_TYPE = "blended")
+TAU_HOURS = 24.0                    # Timescale in hours (e.g., 24.0 for weak nudging, 8.66 for moderate)
+TAU_DAYS = None                     # Timescale in days (e.g., 1.0)
+MODEL_WEIGHT = None                 # Optional direct model weight
+REANALYSIS_WEIGHT = None            # Optional direct reanalysis weight
+
+# 4. Experiment Naming and Perturbations
+EXPERIMENT_NAME = None              # None = auto-generated descriptive name
+TEMP_STD_DEV = 0.1                  # Noise added to temperatures in Kelvin (Member 0 is unperturbed)
 ```
 
-### Example B: Run a Prescribed Nudging Experiment ($\tau = 0$)
-In this experiment, the uppermost level is completely overridden with ERA5 observations:
-```bash
-python run_ensemble_experiment.py \
-  --start-date 2018-01-25T00:00:00 \
-  --n-members 10 \
-  --batch-size 5 \
-  --n-forward-steps 100 \
-  --nudging-type prescribed \
-  --experiment-name exp_20180125_prescribed
+---
+
+### Step 5.2: Common Experiment Configurations
+
+#### Case A: Weak Blended Nudging ($\tau = 24\,\text{hours}$, default)
+```python
+NUDGING_TYPE = "blended"
+TAU_HOURS = 24.0
 ```
 
-### Example C: Run a Free Forecast Experiment (No Nudging)
-In this experiment, no nudging is applied:
-```bash
-python run_ensemble_experiment.py \
-  --start-date 2018-01-25T00:00:00 \
-  --n-members 10 \
-  --batch-size 5 \
-  --n-forward-steps 100 \
-  --nudging-type free \
-  --experiment-name exp_20180125_free
+#### Case B: Moderate Blended Nudging ($\tau \approx 8.7\,\text{hours}$ or 50/50 weights)
+```python
+NUDGING_TYPE = "blended"
+TAU_HOURS = 8.66
+# Or directly:
+# MODEL_WEIGHT = 0.5
+# REANALYSIS_WEIGHT = 0.5
 ```
 
-### Example D: Quick Test Run (2 members, 1 day)
-If you just want to test that everything is working without waiting:
-```bash
-python run_ensemble_experiment.py \
-  --start-date 2018-01-25T00:00:00 \
-  --n-members 2 \
-  --batch-size 2 \
-  --n-forward-steps 4 \
-  --nudging-type blended \
-  --tau-hours 24.0 \
-  --experiment-name test_quick_check
+#### Case C: Prescribed Nudging ($\tau = 0$, complete replacement)
+```python
+NUDGING_TYPE = "prescribed"
 ```
+
+#### Case D: Free Forecast ($\tau = \infty$, no nudging)
+```python
+NUDGING_TYPE = "free"
+```
+
+---
+
+### Step 5.3: Run the Script
+Once you have adjusted the parameters in the file, save it and run:
+```bash
+python run_ensemble_experiment.py
+```
+That's it! The script will:
+1. Print the experiment summary.
+2. Generate the perturbed initial conditions.
+3. Prepare the forcing data.
+4. Run each batch through ACE2.
+5. Merge the results into `/home/links/ws359/ACE/ACE_output/<experiment_name>/autoregressive_predictions.nc`.
 
 ---
 
