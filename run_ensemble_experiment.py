@@ -40,7 +40,7 @@ import yaml
 # ==============================================================================
 
 # 1. Forecast Dates and Ensemble Size
-START_DATE = "2018-01-25T00:00:00"  # Start date/time (e.g. "2018-01-25" or "2018-01-25T00:00:00")
+START_DATE = "2018-12-13T00:00:00"  # Start date/time (SNAPSI Case Study 2 early start: 2018-12-13)
 N_MEMBERS = 10                       # Number of ensemble members (e.g. 10)
 BATCH_SIZE = 5                      # Members per batch (keep <= 5 to avoid GPU memory overflow)
 N_FORWARD_STEPS = 100               # Number of 6-hour forecast steps (100 steps = 25 days)
@@ -448,15 +448,19 @@ def main() -> None:
     logging.info("==========================================================")
 
     # 1. Prepare Forcing Data (if nudging is requested)
-    year = int(str(np.datetime64(start_date))[:4])
+    start_dt = np.datetime64(start_date)
+    end_dt = start_dt + np.timedelta64(n_forward_steps * 6, "h")
+    start_year = int(str(start_dt)[:4])
+    end_year = int(str(end_dt)[:4])
     if nudging_type in ("blended", "prescribed"):
-        forcing_dir = ensure_forcing_data(
-            year=year,
-            base_forcing_dir=base_forcing_dir,
-            era5_data_dir=era5_data_dir,
-            mod_forcing_dir=mod_forcing_dir,
-            nudging_var="eastward_wind_0",
-        )
+        for yr in range(start_year, end_year + 1):
+            forcing_dir = ensure_forcing_data(
+                year=yr,
+                base_forcing_dir=base_forcing_dir,
+                era5_data_dir=era5_data_dir,
+                mod_forcing_dir=mod_forcing_dir,
+                nudging_var="eastward_wind_0",
+            )
     else:
         forcing_dir = base_forcing_dir
 
