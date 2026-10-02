@@ -78,7 +78,10 @@ TEMP_STD_DEV = 0.1                  # in Kelvin (0.1 K is standard; Member 0 is 
 RANDOM_SEED = 42                    # Random seed for reproducible perturbations
 
 # Optional: reuse exact initial conditions from another experiment for matched paired comparisons:
-EXISTING_IC_DIR: pathlib.Path | None = pathlib.Path("/home/links/ws359/ACE/ACE_output/exp_20181213_ens10_blended_tau24h/initial_conditions")
+# - Set to None (default): automatically generates fresh perturbed initial conditions for START_DATE.
+# - Set to a Path (e.g. pathlib.Path("/path/to/exp_.../initial_conditions")): reuses the exact ICs
+#   so that ensemble members 0..N-1 are identically matched across experiments (e.g. Nudged vs Control).
+EXISTING_IC_DIR: pathlib.Path | None = None
 
 # 5. Paths and Environment
 OUTPUT_ROOT = pathlib.Path("/home/links/ws359/ACE/ACE_output")

@@ -25,38 +25,66 @@ In ACE2, we can run four types of forecasts:
 
 ---
 
-## 2. Setting Up Your Environment on `maths-gpu`
+## 2. Setting Up Your Python Environment on `maths-gpu`
 
-Before running any code, you need to configure your Python environment and libraries.
+Because you will be working with a modified version of the ACE code containing custom stratospheric nudging features, it is best to create a dedicated conda environment for it.
 
-### Step 2.1: Activate the Conda Environment
-Log into the server and activate the dedicated environment:
+### Step 2.1: Create and Activate a New Conda Environment
+Log into `maths-gpu` and create a clean conda environment (e.g. named `ace_nudge`):
 ```bash
+conda create --name ace_nudge python=3.10 -y
 conda activate ace_nudge
 ```
 
-### Step 2.2: Set Essential Environment Variables
-To ensure PyTorch manages GPU memory efficiently and finds the correct C++ libraries for NetCDF and Matplotlib, export these environment variables in your terminal (or add them to your `~/.bashrc`):
+### Step 2.2: Install Required Base Packaging Tools
+Before installing ACE, install the required setuptools version:
+```bash
+pip install setuptools==80.0.0
+```
+
+### Step 2.3: Set Essential Environment Variables
+To ensure PyTorch manages GPU memory efficiently and dynamically links to the conda environment's C++ NetCDF and CUDA libraries, export these environment variables in your terminal (or add them to your `~/.bashrc`):
 ```bash
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export LD_LIBRARY_PATH=/home/links/ws359/miniconda3/envs/ace_nudge/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 ```
 
 ---
 
-## 3. Getting the Code
+## 3. Getting the Nudging Code into Your ACE Repository
 
-The modified ACE codebase with nudging support lives on GitHub:
-- Repository: `git@github.com:wseviour/ace.git`
-- Branch: `stepper_override_nudging`
+Since you already have your own local clone and fork of the ACE repository, you do not need to re-clone from scratch! Instead, you can add Will's repository as a git remote, fetch the `stepper_override_nudging` branch, and branch off it.
 
-If you are setting it up in your own workspace:
+### Step 3.1: Navigate to Your Existing ACE Repository
 ```bash
-git clone git@github.com:wseviour/ace.git
-cd ace
-git checkout stepper_override_nudging
+cd ~/ace  # or the path to your existing ACE repository
+```
+
+### Step 3.2: Add Will's Repository as a Git Remote
+Add Will's GitHub repo as a new remote called `will` (or `wseviour`):
+```bash
+git remote add will git@github.com:wseviour/ace.git
+```
+*(If you use HTTPS rather than SSH, you can use: `https://github.com/wseviour/ace.git`)*
+
+### Step 3.3: Fetch Will's Branches
+Fetch all branches and commits from Will's repository:
+```bash
+git fetch will
+```
+
+### Step 3.4: Create Your Own Local Branch from Will's Nudging Branch
+Create and switch to a new local branch (e.g. `nudging` or `my_nudging`) based on `will/stepper_override_nudging`:
+```bash
+git checkout -b nudging will/stepper_override_nudging
+```
+
+### Step 3.5: Install the Nudging ACE Package in Your Environment
+With your new `ace_nudge` conda environment activated, install this modified ACE package in editable mode:
+```bash
 pip install -e .
 ```
+You now have the full nudging functionality installed and ready in your `ace_nudge` environment!
 
 ---
 
@@ -112,6 +140,10 @@ REANALYSIS_WEIGHT = None            # Optional direct reanalysis weight
 # 4. Experiment Naming and Perturbations
 EXPERIMENT_NAME = None              # None = auto-generated descriptive name
 TEMP_STD_DEV = 0.1                  # Noise added to temperatures in Kelvin (Member 0 is unperturbed)
+RANDOM_SEED = 42                    # Random seed for reproducible perturbations
+
+# Optional: reuse exact initial conditions from another experiment for matched paired comparisons:
+EXISTING_IC_DIR = None              # None = generate fresh ICs; or pathlib.Path("...")
 ```
 
 ---
@@ -151,6 +183,14 @@ NUDGING_TYPE = "control"
 TAU_HOURS = 24.0
 ```
 *(The script will automatically detect that climatological forcing is needed, generate the 40-year climatology if not already created, and build the year-specific forcing file!)*
+
+#### Case F: Paired Comparison (e.g. running Control with the exact same ICs as Nudged)
+To ensure Member 0..9 in your Control experiment start with the exact same initial state and perturbations as your Nudged experiment, set `EXISTING_IC_DIR` to point to the `initial_conditions` folder of the first run:
+```python
+NUDGING_TYPE = "control"
+TAU_HOURS = 24.0
+EXISTING_IC_DIR = pathlib.Path("/home/links/ws359/ACE/ACE_output/exp_20181213_ens10_blended_tau24h/initial_conditions")
+```
 
 ---
 
